@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Comment Renderer</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f5f5f5;
+    }
+    
+    .search-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 10px 20px;
+      background-color: white;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      z-index: 100;
+      display: flex;
+      gap: 10px;
+    }
+    
+    input {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    
+    .content-container {
+      margin-top: 70px;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    
+    .content-box {
+      padding: 20px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+    }
+    
+    .content-info {
+      border-top: 1px solid #eee;
+      margin-top: 10px;
+      padding-top: 10px;
+      font-size: 12px;
+      color: #666;
+    }
+    
+    .content-box-wrapper {
+      position: relative;
+    }
+    
+    .generation-status {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 5px;
+      background-color: rgba(0, 0, 0, 0.7);
+      color: white;
+      text-align: center;
+      font-size: 12px;
+    }
+    
+    .loading-indicator {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+
+    /* Make iframes responsive */
+    iframe {
+      max-width: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="search-container">
+    <input type="text" id="search-input" placeholder="Search by comment text or username...">
+  </div>
+  
+  <div class="content-container" id="content-container">
+    <div class="loading-indicator">
+      Loading and processing comments...
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js",
+        "react-dom": "https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"
+      }
+    }
+  </script>
+  
+  <script>
+    const room = new WebsimSocket();
+    let allContents = [];
+    let loadingComplete = false;
+    
+    // Function to sanitize HTML (basic version)
+    function sanitizeHtml(html) {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      return doc.body.textContent || "";
+    }
+    
+    // Function to render content in a sandbox iframe
+    function renderInSandbox(container, html, css, js) {
+      const iframe = document.createElement('iframe');
+      iframe.style.width = '100%';
+      iframe.style.height = '300px'; // Default height
+      iframe.style.border = 'none';
+      iframe.style.overflow = 'hidden';
+      
+      container.appendChild(iframe);
+      
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+      
+      // Create the HTML structure
+      iframeDoc.open();
+      iframeDoc.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            body {
+              margin: 0;
+              padding: 0;
+              font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              overflow: hidden;
+            }
+            ${css}
+          </style>
+        </head>
+        <body>
+          ${html}
+          <script>
+            ${js}
+          </script>
+          <script>
+            // Adjust iframe height to content
+            function adjustIframeHeight() {
+              const height = document.body.scrollHeight;
+              window.parent.postMessage({ type: 'resize', height: height }, '*');
+            }
+            
+            // Run once when loaded
+            adjustIframeHeight();
+            
+            // Listen for window resize events
+            window.addEventListener('resize', adjustIframeHeight);
+            
+            // MutationObserver to watch for DOM changes
+            const observer = new MutationObserver(adjustIframeHeight);
+            observer.observe(document.body, { 
+              childList: true, 
+              subtree: true,
+              attributes: true 
+            });
+          </script>
+        <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+        </html>
+      `);
+      iframeDoc.close();
+      
+      // Add a listener for messages from the iframe
+      window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'resize') {
+          iframe.style.height = `${event.data.height + 20}px`; // Add some padding
+        }
+      });
+      
+      return iframe;
+    }
+    
+    // Function to create content box
+    function createContentBox(content) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'content-box-wrapper';
+      
+      const box = document.createElement('div');
+      box.className = 'content-box';
+      box.id = `content-${content.id}`;
+      
+      // Render the content in a sandbox iframe
+      renderInSandbox(box, content.html, content.css, content.js);
+      
+      // Add content info
+      const info = document.createElement('div');
+      info.className = 'content-info';
+      info.innerHTML = `
+        <div><strong>From:</strong> ${content.username}</div>
+        <div><strong>Comment:</strong> ${sanitizeHtml(content.comment)}</div>
+        <div><strong>Created:</strong> ${new Date(content.created_at).toLocaleString()}</div>
+      `;
+      
+      box.appendChild(info);
+      wrapper.appendChild(box);
+      
+      return wrapper;
+    }
+    
+    // Function to filter content based on search
+    function filterContent(searchText) {
+      const container = document.getElementById('content-container');
+      container.innerHTML = '';
+      
+      if (!loadingComplete) {
+        container.innerHTML = '<div class="loading-indicator">Loading and processing comments...</div>';
+        return;
+      }
+      
+      const filteredContent = searchText 
+        ? allContents.filter(content => 
+            content.comment.toLowerCase().includes(searchText.toLowerCase()) || 
+            content.username.toLowerCase().includes(searchText.toLowerCase()))
+        : allContents;
+      
+      if (filteredContent.length === 0) {
+        container.innerHTML = '<div class="loading-indicator">No matching content found</div>';
+        return;
+      }
+      
+      filteredContent.forEach(content => {
+        container.appendChild(createContentBox(content));
+      });
+    }
+    
+    // Function to process a comment and generate HTML/CSS/JS
+    async function processComment(comment) {
+      // Check if we already have content for this comment
+      const existingContents = room.collection('generated_content')
+        .filter({ comment_id: comment.id })
+        .getList();
+      
+      if (existingContents.length > 0) {
+        return existingContents[0]; // Return existing content
+      }
+      
+      // If not, generate new content with AI
+      try {
+        const completion = await websim.chat.completions.create({
+          messages: [
+            {
+              role: "system",
+              content: `You are a specialized AI that converts comment requests into HTML, CSS, and JavaScript code.
+              The user will provide a comment, and you must generate a small, self-contained web component that fulfills what the comment describes.
+              Output ONLY valid JSON with these fields:
+              {
+                "html": "the HTML code",
+                "css": "the CSS code",
+                "js": "the JavaScript code"
+              }
+              Your creation should be visually appealing, interactive when appropriate, and match what the comment asks for.
+              Prioritize small file size and performance. Use inline SVG instead of images where possible.
+              Do not include external resources other than from CDNs. No explanations, just valid JSON.`
+            },
+            {
+              role: "user",
+              content: comment.content
+            }
+          ],
+          json: true
+        });
+        
+        // Parse the response
+        const generatedCode = JSON.parse(completion.content);
+        
+        // Store in database
+        const contentRecord = await room.collection('generated_content').create({
+          comment_id: comment.id,
+          comment: comment.content,
+          username: comment.username,
+          html: generatedCode.html,
+          css: generatedCode.css,
+          js: generatedCode.js
+        });
+        
+        return contentRecord;
+      } catch (error) {
+        console.error("Error generating content:", error);
+        
+        // Store error in database
+        const errorRecord = await room.collection('generated_content').create({
+          comment_id: comment.id,
+          comment: comment.content,
+          username: comment.username,
+          html: `<div class="error">Error generating content</div>`,
+          css: `.error { color: red; padding: 20px; }`,
+          js: `console.error("Failed to generate content for comment: ${comment.id}");`
+        });
+        
+        return errorRecord;
+      }
+    }
+    
+    // Function to get current project ID
+    async function getCurrentProjectId() {
+      try {
+        const project = await window.websim.getCurrentProject();
+        return project.id;
+      } catch (error) {
+        console.error("Error getting current project:", error);
+        return null;
+      }
+    }
+    
+    // Function to load comments
+    async function loadComments() {
+      try {
+        const projectId = await getCurrentProjectId();
+        if (!projectId) {
+          throw new Error("Could not determine current project ID");
+        }
+        
+        // Fetch comments for the project
+        const response = await fetch(`/api/v1/projects/${projectId}/comments`);
+        const data = await response.json();
+        
+        return data.comments.data.map(item => ({
+          id: item.comment.id,
+          content: item.comment.raw_content || item.comment.content.children[0].children[0].text || "No content",
+          username: item.comment.author.username,
+          created_at: item.comment.created_at
+        }));
+      } catch (error) {
+        console.error("Error loading comments:", error);
+        return [];
+      }
+    }
+    
+    // Function to initialize the application
+    async function init() {
+      try {
+        // First check for existing content in the database
+        const existingContents = room.collection('generated_content').getList();
+        
+        if (existingContents.length > 0) {
+          allContents = existingContents;
+          loadingComplete = true;
+          filterContent('');
+        }
+        
+        // Load comments
+        const comments = await loadComments();
+        
+        if (comments.length === 0) {
+          document.getElementById('content-container').innerHTML = 
+            '<div class="loading-indicator">No comments found for this project</div>';
+          loadingComplete = true;
+          return;
+        }
+        
+        // Process each comment sequentially
+        for (const comment of comments) {
+          const content = await processComment(comment);
+          
+          // If this is a new content that wasn't in our initial load
+          if (!allContents.some(c => c.comment_id === content.comment_id)) {
+            allContents.push(content);
+          }
+        }
+        
+        loadingComplete = true;
+        filterContent('');
+        
+      } catch (error) {
+        console.error("Error initializing application:", error);
+        document.getElementById('content-container').innerHTML = 
+          `<div class="loading-indicator">Error: ${error.message}</div>`;
+      }
+    }
+    
+    // Add event listener for search
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      filterContent(e.target.value);
+    });
+    
+    // Subscribe to changes in the generated_content collection
+    room.collection('generated_content').subscribe((contents) => {
+      allContents = contents;
+      if (loadingComplete) {
+        filterContent(document.getElementById('search-input').value);
+      }
+    });
+    
+    // Initialize the application
+    init();
+  </script>
+</body>
+</html>
+
