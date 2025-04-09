@@ -272,23 +272,31 @@
             },
             {
               role: "user",
-              content: comment.content
+              content: [
+                { type: "text", text: comment.content }
+              ]
             }
           ],
           json: true
         });
         
-        // Parse the response
-        const generatedCode = JSON.parse(completion.content);
+        // Parse the response with error handling
+        let generatedCode;
+        try {
+          generatedCode = JSON.parse(completion.content);
+        } catch (parseError) {
+          console.error("Error parsing AI response:", parseError);
+          throw new Error("Invalid response format from AI");
+        }
         
         // Store in database
         const contentRecord = await room.collection('generated_content').create({
           comment_id: comment.id,
           comment: comment.content,
           username: comment.username,
-          html: generatedCode.html,
-          css: generatedCode.css,
-          js: generatedCode.js
+          html: generatedCode.html || "<div>No HTML generated</div>",
+          css: generatedCode.css || "",
+          js: generatedCode.js || ""
         });
         
         return contentRecord;
@@ -404,4 +412,3 @@
   </script>
 </body>
 </html>
-
